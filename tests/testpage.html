@@ -1,0 +1,42 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simple WebPage</title>
+  <style>
+    textarea {
+      width: 300px;
+      height: 100px;
+    }
+
+    button {
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <textarea id="textBox1"></textarea>
+  <textarea id="textBox2"></textarea>
+  <button onclick="sendText()">发给App</button>
+
+  <script>
+    function sendText() {
+      let jsonData = {
+        "type": 1,
+        "content": document.getElementById("textBox1").value
+      };
+      window.chrome.webview.postMessage(JSON.stringify(jsonData))
+    }
+
+    window.chrome.webview.addEventListener('message', function(event) {
+      console.log(event.data);
+      document.getElementById("textBox2").value = event.data['content'];
+    });
+  </script>
+</body>
+
+</html>
