@@ -8,6 +8,15 @@
 #include "example_mfcDlg.h"
 #include "afxdialogex.h"
 
+#include <iostream>
+#include <string>
+using namespace std;
+
+#include "json.hpp"
+using json = nlohmann::json;
+
+#define WM_NOTIFICATION_TO_WEBPAGE   (WM_USER+100)
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
@@ -41,6 +50,7 @@ BEGIN_MESSAGE_MAP(CexamplemfcDlg, CDialog)
 	ON_BN_CLICKED(IDC_BUTTON_BACK, &CexamplemfcDlg::OnBnClickedButtonBack)
 	ON_BN_CLICKED(IDC_BUTTON_FORWARD, &CexamplemfcDlg::OnBnClickedButtonForward)
 	ON_BN_CLICKED(IDC_BUTTON_RELOAD, &CexamplemfcDlg::OnBnClickedButtonReload)
+	ON_MESSAGE(WM_NOTIFICATION_TO_WEBPAGE, OnNotifyWebPage)
 END_MESSAGE_MAP()
 
 
@@ -56,11 +66,17 @@ BOOL CexamplemfcDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// 작은 아이콘을 설정합니다.
 
 	// TODO: 여기에 추가 초기화 작업을 추가합니다.
-	CRect rect;
-	GetClientRect(rect);
-	MoveWindow(rect);
+	//CRect rect;
+	//GetClientRect(rect);
+	//MoveWindow(rect);
+
+	m_webview2.SetWebMsgListener(this);
+
+	//m_webview2.Navigate(_T("https://baidu.com"));
 	
-	m_webview2.Navigate(_T("https://youtube.com"));
+	//CString destUrl =  _T("file:///") + GetHtmlPath(_T("index.html"));
+	CString destUrl = _T("file:///") + GetHtmlPath(_T("testpage.html"));
+	m_webview2.Navigate(destUrl);
 
 	return TRUE;  // 포커스를 컨트롤에 설정하지 않으면 TRUE를 반환합니다.
 }
@@ -123,7 +139,6 @@ void CexamplemfcDlg::OnBnClickedOk()
 
 void CexamplemfcDlg::OnBnClickedCancel()
 {
-	// TODO: 여기에 컨트롤 알림 처리기 코드를 추가합니다.
 	CDialog::OnCancel();
 }
 
@@ -143,4 +158,69 @@ void CexamplemfcDlg::OnBnClickedButtonForward()
 void CexamplemfcDlg::OnBnClickedButtonReload()
 {
 	m_webview2.Reload();
+}
+
+// 当网页加载完成时的通知
+void CexamplemfcDlg::OnNavigationCompleted()
+{
+}
+
+// 接收来自网页的数据
+void CexamplemfcDlg::OnWebMessageReceived(LPCTSTR message)
+{
+	try {
+		json msg = json::parse(wstring(message));
+#ifdef _DEBUG
+		string whatsthis = msg.dump(4);
+		//std::cout << whatsthis << std::endl;
+#endif
+
+		//auto appid = msg["appid"].get<int>();
+		//auto cmdType = msg["cmd"].get<string>();
+
+		////////////////////////////////////////////////
+		// TEST: Reply to the web page
+		NotifyWebUI("Hello World from App :)");
+		// Alternatively, post a windows message
+		//PostMessage(WM_NOTIFICATION_TO_WEBPAGE);
+		////////////////////////////////////////////////
+	}
+	catch (std::exception& e) {
+		std::cout << e.what() << std::endl;
+		MessageBox(_T("Failed to parse Web message."), _T("QM"), MB_OK | MB_ICONERROR);
+	}
+}
+
+void CexamplemfcDlg::NotifyWebUI(const char* pMsg)
+{
+	json jsResponse;
+	jsResponse["type"] = 666;
+	jsResponse["content"] = pMsg;
+	CString strMsg(jsResponse.dump(4).c_str());
+	m_webview2.PostWebMessageAsJson(strMsg); // 通知网页
+}
+
+LRESULT CexamplemfcDlg::OnNotifyWebPage(WPARAM wParam, LPARAM lParam)
+{
+	NotifyWebUI("Hello World from App. Oh yeah~ in Main UI thread");
+	return 0;
+}
+
+CString CexamplemfcDlg::GetHtmlPath(TCHAR* filename)
+{
+	TCHAR szPath[MAX_PATH] = { 0 };
+	::GetModuleFileName(NULL, szPath, MAX_PATH);
+
+	CString strProcessPath(szPath);
+
+	// 删除文件名部分，得到相同目录的路径
+	PathRemoveFileSpec(strProcessPath.GetBuffer());
+	strProcessPath.ReleaseBuffer();
+
+	// 拼接 index.html 文件的完整路径
+	CString strIndexHtmlPath;
+	PathCombine(strIndexHtmlPath.GetBuffer(MAX_PATH), strProcessPath, filename);
+	strIndexHtmlPath.ReleaseBuffer();
+
+	return strIndexHtmlPath;
 }

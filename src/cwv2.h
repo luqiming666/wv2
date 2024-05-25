@@ -11,9 +11,7 @@
 #include "WebView2.h"
 #include "wv2.h"
 
-#include "eventHandler.h"
-#include "cwv2env.h"
-#include "cwv2settings.h"
+#include "WindowCloseRequested.h"
 
 class cwv2 :
 	public wv2,
@@ -25,8 +23,7 @@ class cwv2 :
 	public ICoreWebView2DOMContentLoadedEventHandler,
 	public ICoreWebView2HistoryChangedEventHandler,
 	public ICoreWebView2PermissionRequestedEventHandler,
-	public ICoreWebView2WebMessageReceivedEventHandler,
-	public ICoreWebView2NewWindowRequestedEventHandler
+	public ICoreWebView2WebMessageReceivedEventHandler
 {
 public:
 	friend class WindowCloseRequested;
@@ -62,7 +59,6 @@ public:
 	STDMETHODIMP Invoke(ICoreWebView2 *sender, ICoreWebView2PermissionRequestedEventArgs *args) OVERRIDE;
 	STDMETHODIMP Invoke(ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) OVERRIDE;
 	STDMETHODIMP Invoke(ICoreWebView2 *sender, IUnknown *args) OVERRIDE;
-	STDMETHODIMP Invoke(ICoreWebView2* sender, ICoreWebView2NewWindowRequestedEventArgs* args) OVERRIDE;
 	STDMETHODIMP QueryInterface(REFIID riid, LPVOID* ppv) OVERRIDE;
 	ULONG STDMETHODCALLTYPE AddRef() OVERRIDE;
 	ULONG STDMETHODCALLTYPE Release() OVERRIDE;
@@ -70,7 +66,8 @@ public:
 
 	// wv2 interface	///////////////////////////////////////////////////////
 	wv2settings* getSettings() OVERRIDE;
-	
+	bool setSettings(const wv2settings* settings) OVERRIDE;
+
 	bool executeScript(LPCWSTR script, executeScriptCompleted handler) OVERRIDE;
 	LPCWSTR executeScriptSync(LPCWSTR script) OVERRIDE;
 	LPCWSTR getSource() OVERRIDE;
@@ -105,22 +102,7 @@ public:
 
 	bool postWebMessageAsJson(LPCWSTR messageAsJson) OVERRIDE;
 	bool postWebMessageAsString(LPCWSTR messageAsString) OVERRIDE;
-	bool setIsMutedChangedHandler(isMutedChanged handler) OVERRIDE;
-	bool setIsDocumentPlayingAudioChangedHandler(
-		isDocumentPlayingAudioChanged handler) OVERRIDE;
 
-	wv2bool isMuted() OVERRIDE;
-	wv2bool setIsMuted(const bool muted) OVERRIDE;
-
-	wv2bool isDocumentPlayingAudio() OVERRIDE;
-	wv2bool openTaskManagerWindow() OVERRIDE;
-
-	wv2env* getEnvironment() OVERRIDE;
-	wv2bool setNewWindowRequestedHandler(newWindowRequested handler) OVERRIDE;
-	wv2bool setDocumentTitleChangedHandler(documentTitleChanged handler) OVERRIDE;
-	LPCWSTR documentTitle() OVERRIDE;
-	wv2bool setContentLoadingHandler(contentLoading handler) OVERRIDE;
-	wv2bool setScriptDialogOpeningHandler(scriptDialogOpening handler) OVERRIDE;
 	// wv2 interface	///////////////////////////////////////////////////////
 
 	// 웹뷰 초기화가 완료 여부 (초기화가 성공되었음을 의미하지 않음)
@@ -134,20 +116,20 @@ private:
 	// 생성실패로 상태 설정
 	HRESULT setStatusCreateFail(HRESULT errorCode);
 
+	void fireWindowCloseRequested();
 private:
 	HWND parentWindow_ = nullptr;
 	ULONG refCount_ = 0;
-	CComPtr<ICoreWebView2_3> view2_3_;
-	CComPtr<ICoreWebView2_8> view2_8_;
+	CComPtr<ICoreWebView2_3> webview_;
 	CComPtr<ICoreWebView2Controller3> controller_;
-	cwv2env env_;
+	CComPtr<ICoreWebView2Environment2> env2_;
 	
 	request lastRequest_;	// 처리되지 않은 마지막 요청정보
 	CreateStatus createStatus_;
 	void* userData_;
 	LPWSTR executeScriptSyncResult_;
 	std::wstring virtualHostName_;
-	cwv2settings settings_;
+	wv2settings settings_;
 
 	executeScriptCompleted executeScriptCompletedHandler_;
 	createCompleted createCompletedHandler_;
@@ -169,15 +151,6 @@ private:
 
 	webMessageReceived webMessageReceivedHandler_;
 	EventRegistrationToken webMessageReceivedToken_;
-
-	IsMutedChanged isMutedChangedHandler_;
-	IsDocumentPlayingAudioChanged isDocumentPlayingAudioChangedHandler_;
-
-	newWindowRequested newWindowRequestedHandler_{nullptr};
-	EventRegistrationToken newWindowRequestedToken_;
-	DocumentTitleChanged documentTitleChangedHandler_;
-	ContentLoading contentLoadingHandler_;
-	ScriptDialogOpening scriptDialogOpeningHandler_;
 	
 	HRESULT lastError_;
 	bool coInitilized_;

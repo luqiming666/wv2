@@ -6,8 +6,6 @@
 #include <codecvt>
 #include <Shlwapi.h>
 #pragma comment(lib, "Shlwapi.lib")
-#include "cwv2newWindowRequestedEventArgs.h"
-#include "cwv2types.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -32,8 +30,8 @@ static char THIS_FILE[] = __FILE__;
 using namespace std;
 static void wait();
 
+wv2settings wv2settingsDefault();
 EventRegistrationToken emptyEventRegistrationToken();
-
 ///////////////////////////////////////////////////////////////////////////////
 void wait() {
 	MSG msg;
@@ -43,28 +41,13 @@ void wait() {
 	}
 }
 
-
-class cwv2domContentLoadedEventArgs: public wv2domContentLoadedEventArgs {
-public:
-	cwv2domContentLoadedEventArgs(ICoreWebView2DOMContentLoadedEventArgs& args):args_(args) {}
-
-	uint64_t navigationId() override {
-		UINT64 id = 0;
-		args_.get_NavigationId(&id);
-		return id;
-	}
-
-private:
-	ICoreWebView2DOMContentLoadedEventArgs& args_;
-};
-
 ///////////////////////////////////////////////////////////////////////////////
 cwv2::cwv2(HWND parentWindow,
 	createCompleted createCompletedHandler /*=nullptr*/,
 	void* userData /*=nullptr*/) :parentWindow_(parentWindow),
 	createCompletedHandler_(createCompletedHandler), userData_(userData),
 	refCount_(0), createStatus_(none), executeScriptSyncResult_(nullptr),
-	executeScriptCompletedHandler_(nullptr),
+	settings_(wv2settingsDefault()), executeScriptCompletedHandler_(nullptr),
 	historyChangedHandler_(nullptr), 
 	historyChangedToken_(emptyEventRegistrationToken()),
 	navigationCompletedHandler_(nullptr),
@@ -75,10 +58,7 @@ cwv2::cwv2(HWND parentWindow,
 	domContentLoadedToken_(emptyEventRegistrationToken()),
 	permissionRequestedToken_(emptyEventRegistrationToken()),
 	webMessageReceivedHandler_(nullptr),
-	webMessageReceivedToken_(emptyEventRegistrationToken()),
-	newWindowRequestedHandler_(nullptr),
-	newWindowRequestedToken_(emptyEventRegistrationToken())
-{
+	webMessageReceivedToken_(emptyEventRegistrationToken()) {
 	lastError_ = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 	coInitilized_ = SUCCEEDED(lastError_);
 	createStatus_ = created;
@@ -97,30 +77,19 @@ void cwv2::clearAll(bool detachController/*=false*/) {
 		executeScriptSyncResult_ = nullptr;
 	}
 
-	if (view2_3_) {
-		windowCloseRequestedHandler_.remove(view2_3_);
-		view2_3_->remove_WebMessageReceived(webMessageReceivedToken_);
-		view2_3_->remove_PermissionRequested(permissionRequestedToken_);
-		view2_3_->remove_HistoryChanged(historyChangedToken_);
-		view2_3_->remove_DOMContentLoaded(domContentLoadedToken_);
-		view2_3_->remove_NavigationStarting(navigationStartingToken_);
-		view2_3_->remove_NavigationCompleted(navigationCompletedToken_);	
+	if (webview_) {
+		windowCloseRequestedHandler_.remove(webview_);
+		webview_->remove_WebMessageReceived(webMessageReceivedToken_);
+		webview_->remove_PermissionRequested(permissionRequestedToken_);
+		webview_->remove_HistoryChanged(historyChangedToken_);
+		webview_->remove_DOMContentLoaded(domContentLoadedToken_);
+		webview_->remove_NavigationStarting(navigationStartingToken_);
+		webview_->remove_NavigationCompleted(navigationCompletedToken_);	
 		if (virtualHostName_.length() > 0) {
-			view2_3_->ClearVirtualHostNameToFolderMapping(virtualHostName_.c_str());
+			webview_->ClearVirtualHostNameToFolderMapping(virtualHostName_.c_str());
 		}
 
-		view2_3_->remove_NewWindowRequested(newWindowRequestedToken_);
-		documentTitleChangedHandler_.remove(view2_3_);
-		contentLoadingHandler_.remove(view2_3_);
-		scriptDialogOpeningHandler_.remove(view2_3_);
-
-		view2_3_.Release();
-	}
-
-	if (view2_8_) {
-		isMutedChangedHandler_.remove(view2_8_);
-		isDocumentPlayingAudioChangedHandler_.remove(view2_8_);
-		view2_8_.Release();
+		webview_.Release();
 	}
 
 	if (controller_) {
@@ -133,28 +102,93 @@ void cwv2::clearAll(bool detachController/*=false*/) {
 		}		
 	}
 
-	env_.Release();
+	if (env2_) {		
+		env2_.Release();
+	}
+
 }
 
 wv2settings* cwv2::getSettings() {
-	if (!view2_3_) return nullptr;
+	if (!webview_) return nullptr;
 
-	if(!settings_.getCoreWebView2Settings()) {
-		CComPtr<ICoreWebView2Settings> s;
-		lastError_ = view2_3_->get_Settings(&s);
-		if(FAILED(lastError_)) {
-			return nullptr;
-		}
-
-		settings_.setCoreWebView2Settings(s);
-
-		CComPtr<ICoreWebView2Settings2> s2;
-		if(SUCCEEDED(s->QueryInterface(__uuidof(ICoreWebView2Settings2), (void**)&s2))) {
-			settings_.setCoreWebView2Settings2(s2);
-		}
+	CComPtr<ICoreWebView2Settings> s;
+	lastError_ = webview_->get_Settings(&s);
+	if (FAILED(lastError_)) {
+		return nullptr;
 	}
 
+	BOOL v;
+	s->get_AreDefaultContextMenusEnabled(&v);
+	settings_.areDefaultContextMenusEnabled = v == TRUE;
+	s->get_AreDefaultScriptDialogsEnabled(&v);
+	settings_.areDefaultScriptDialogsEnabled = v == TRUE;
+	s->get_AreDevToolsEnabled(&v);
+	settings_.areDevToolsEnabled= v == TRUE;
+	s->get_AreHostObjectsAllowed(&v);
+	settings_.areHostObjectsAllowed = v == TRUE;
+	s->get_IsBuiltInErrorPageEnabled(&v);
+	settings_.isBuiltInErrorPageEnabled = v == TRUE;
+	s->get_IsScriptEnabled(&v);
+	settings_.isScriptEnabled = v == TRUE;
+	s->get_IsStatusBarEnabled(&v);
+	settings_.isStatusBarEnabled = v == TRUE;
+	s->get_IsWebMessageEnabled(&v);
+	settings_.isWebMessageEnabled = v == TRUE;
+	s->get_IsZoomControlEnabled(&v);
+	settings_.isZoomControlEnabled = v == TRUE;
+
 	return &settings_;
+}
+
+bool cwv2::setSettings(const wv2settings* val) {
+	if (!webview_ or !val) return false;
+	
+	CComPtr<ICoreWebView2Settings> s;	
+	if (FAILED(lastError_ = webview_->get_Settings(&s))) {
+		return false;
+	}
+
+	settings_ = *val;
+	auto& r = settings_;
+	if (FAILED(lastError_ = s->put_AreDefaultContextMenusEnabled(
+		r.areDefaultContextMenusEnabled))) {
+		return false;
+	}
+
+	if (FAILED(lastError_ = s->put_AreDefaultScriptDialogsEnabled(
+		r.areDefaultScriptDialogsEnabled))) {
+		return false;
+	}
+
+	if (FAILED(lastError_ = s->put_AreDevToolsEnabled(r.areDevToolsEnabled))) {
+		return false;
+	}
+
+	if (FAILED(lastError_ = s->put_AreHostObjectsAllowed(r.areHostObjectsAllowed))) {
+		return false;
+	}
+
+	if (FAILED(lastError_ = s->put_IsBuiltInErrorPageEnabled(r.isBuiltInErrorPageEnabled))) {
+		return false;
+	}
+
+	if (FAILED(lastError_ = s->put_IsScriptEnabled(r.isScriptEnabled))) {
+		return false;
+	}
+
+	if (FAILED(lastError_ = s->put_IsStatusBarEnabled(r.isStatusBarEnabled))) {
+		return false;
+	}
+
+	if (FAILED(lastError_ = s->put_IsWebMessageEnabled(r.isWebMessageEnabled))) {
+		return false;
+	}
+
+	if (FAILED(lastError_ = s->put_IsZoomControlEnabled(r.isZoomControlEnabled))) {
+		return false;
+	}
+
+	return true;
 }
 
 void* cwv2::getUserData() {
@@ -185,13 +219,15 @@ STDMETHODIMP cwv2::Invoke(HRESULT errorCode, ICoreWebView2Environment *env) {
 		return setStatusCreateFail(errorCode);
 	}
 
-	// CoreWebView2Environment 획득
-	HRESULT hr = env_.createCoreWebView2EnvironmentCompleted(env);	
-	if(FAILED(hr)) {
+	// CoreWebView2Environment2 획득, 2022.12.13 kim,jk
+	HRESULT hr = env->QueryInterface(IID_ICoreWebView2Environment2, 
+		(void**)&env2_);
+	if (FAILED(hr)) {
 		lastError_ = hr;
 		createStatus_ = failed;
 	}
 
+		
 	hr = env->CreateCoreWebView2Controller(parentWindow_, this);
 	if (FAILED(hr)) {
 		lastError_ = hr;
@@ -202,8 +238,7 @@ STDMETHODIMP cwv2::Invoke(HRESULT errorCode, ICoreWebView2Environment *env) {
 }
 
 STDMETHODIMP cwv2::Invoke(ICoreWebView2 *sender, ICoreWebView2PermissionRequestedEventArgs *args) {
-	if (sender != view2_3_) return E_UNEXPECTED;
-	OutputDebugString(L"WebView2PermissionRequested");
+	if (sender != webview_) return E_UNEXPECTED;
 	args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
 	return S_OK;
 }
@@ -221,13 +256,10 @@ STDMETHODIMP cwv2::Invoke(HRESULT errorCode, ICoreWebView2Controller* controller
 	}
 
 	// WebView2 3번째 버전 획득
-	hr = webview2->QueryInterface(IID_ICoreWebView2_3, (void**)&view2_3_);
+	hr = webview2->QueryInterface(IID_ICoreWebView2_3, (void**)&webview_);
 	if (FAILED(hr)) {
 		return setStatusCreateFail(hr);
 	}
-
-	// WebView2 8번째 버전 획득
-	hr = webview2->QueryInterface(IID_ICoreWebView2_8, (void**)&view2_8_);
 		
 	// 부모화면 사이즈에 맞게 변경
 	RECT bounds = { 0, };
@@ -239,27 +271,18 @@ STDMETHODIMP cwv2::Invoke(HRESULT errorCode, ICoreWebView2Controller* controller
 		return setStatusCreateFail(hr);
 	}
 			
-	if (view2_3_ != nullptr) {
+	if (webview_ != nullptr) {
 		createStatus_ = completed;
-		windowCloseRequestedHandler_.add(view2_3_);
-		view2_3_->add_PermissionRequested(this, &permissionRequestedToken_);
-		view2_3_->add_HistoryChanged(this, &historyChangedToken_);
-		view2_3_->add_DOMContentLoaded(this, &domContentLoadedToken_);
-		view2_3_->add_NavigationStarting(this, &navigationStartingToken_);
-		view2_3_->add_NavigationCompleted(this, &navigationCompletedToken_);
-		view2_3_->add_WebMessageReceived(this, &webMessageReceivedToken_);
-		view2_3_->add_NewWindowRequested(this, &newWindowRequestedToken_);
-		documentTitleChangedHandler_.add(view2_3_);
-		contentLoadingHandler_.add(view2_3_);
-		scriptDialogOpeningHandler_.add(view2_3_);
+		windowCloseRequestedHandler_.add(webview_);
+		webview_->add_PermissionRequested(this, &permissionRequestedToken_);
+		webview_->add_HistoryChanged(this, &historyChangedToken_);
+		webview_->add_DOMContentLoaded(this, &domContentLoadedToken_);
+		webview_->add_NavigationStarting(this, &navigationStartingToken_);
+		webview_->add_NavigationCompleted(this, &navigationCompletedToken_);
+		webview_->add_WebMessageReceived(this, &webMessageReceivedToken_);
 	}
 	else {
 		createStatus_ = failed;
-	}
-
-	if (view2_8_ != nullptr) {
-		isMutedChangedHandler_.add(view2_8_);
-		isDocumentPlayingAudioChangedHandler_.add(view2_8_);
 	}
 
 	if (lastRequest_.uriOrHtmlContent.size() > 0) {
@@ -295,7 +318,7 @@ STDMETHODIMP cwv2::Invoke(HRESULT errorCode, LPCWSTR resultObjectAsJson) {
 }
 
 STDMETHODIMP cwv2::Invoke(ICoreWebView2 *sender, IUnknown *args) {
-	if (sender != view2_3_) return E_UNEXPECTED;
+	if (sender != webview_) return E_UNEXPECTED;
 		
 	if (historyChangedHandler_) {
 		BOOL canGoBack = FALSE;
@@ -309,7 +332,7 @@ STDMETHODIMP cwv2::Invoke(ICoreWebView2 *sender, IUnknown *args) {
 }
 
 STDMETHODIMP cwv2::Invoke(ICoreWebView2 *sender, ICoreWebView2NavigationStartingEventArgs *args) {
-	if (sender != view2_3_) return E_UNEXPECTED;
+	if (sender != webview_) return E_UNEXPECTED;
 
 	if (navigationStartingHandler_) {
 		LPWSTR uri = nullptr;
@@ -326,7 +349,7 @@ STDMETHODIMP cwv2::Invoke(ICoreWebView2 *sender, ICoreWebView2NavigationStarting
 }
 
 STDMETHODIMP cwv2::Invoke(ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) {
-	if (sender != view2_3_) return E_UNEXPECTED;
+	if (sender != webview_) return E_UNEXPECTED;
 
 	if (webMessageReceivedHandler_) {
 		LPWSTR msg = nullptr;
@@ -339,7 +362,7 @@ STDMETHODIMP cwv2::Invoke(ICoreWebView2* sender, ICoreWebView2WebMessageReceived
 }
 
 STDMETHODIMP cwv2::Invoke(ICoreWebView2 *sender, ICoreWebView2NavigationCompletedEventArgs *args) {
-	if (sender != view2_3_) return E_UNEXPECTED;
+	if (sender != webview_) return E_UNEXPECTED;
 	
 	if (navigationCompletedHandler_) {
 		navigationCompletedHandler_(this);
@@ -349,23 +372,11 @@ STDMETHODIMP cwv2::Invoke(ICoreWebView2 *sender, ICoreWebView2NavigationComplete
 }
 
 STDMETHODIMP cwv2::Invoke(ICoreWebView2 *sender, ICoreWebView2DOMContentLoadedEventArgs *args) {
-	if (sender != view2_3_ || args == nullptr) return E_UNEXPECTED;
+	if (sender != webview_) return E_UNEXPECTED;
 
 	if (domContentLoadedHandler_) {
-		cwv2domContentLoadedEventArgs argsWrap(*args);		
-		domContentLoadedHandler_(this, &argsWrap);
+		domContentLoadedHandler_(this);
 	}
-	return S_OK;
-}
-
-STDMETHODIMP cwv2::Invoke(ICoreWebView2* sender, ICoreWebView2NewWindowRequestedEventArgs* args) {
-	if(sender != view2_3_ || args == nullptr) return E_UNEXPECTED;
-
-	if(newWindowRequestedHandler_) {
-		cwv2newWindowRequestedEventArgs argsWrap(*args);
-		newWindowRequestedHandler_(this, &argsWrap);
-	}
-
 	return S_OK;
 }
 
@@ -411,7 +422,7 @@ void cwv2::detach() {
 }
 
 bool cwv2::executeScript(LPCWSTR script, executeScriptCompleted handler) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 	if (handler) {
 		executeScriptCompletedHandler_ = handler;
 	}
@@ -420,27 +431,27 @@ bool cwv2::executeScript(LPCWSTR script, executeScriptCompleted handler) {
 		executeScriptCompletedHandler_ = [](wv2_t sender, LPCWSTR resultObjectAsJson){};
 	}
 	
-	return SUCCEEDED(lastError_ = view2_3_->ExecuteScript(script, this));
+	return SUCCEEDED(lastError_ = webview_->ExecuteScript(script, this));
 }
 
 LPCWSTR cwv2::executeScriptSync(LPCWSTR script) {
-	if (!view2_3_) return nullptr;
+	if (!webview_) return nullptr;
 	executeScriptCompletedHandler_ = nullptr;
 	if (executeScriptSyncResult_) {
 		free(executeScriptSyncResult_);
 		executeScriptSyncResult_ = nullptr;
 	}
 
-	HRESULT hr = view2_3_->ExecuteScript(script, this);
+	HRESULT hr = webview_->ExecuteScript(script, this);
 	if (FAILED(lastError_ = hr)) {
 		return nullptr;
 	}
 
-	const ULONGLONG start = ::GetTickCount64();
-	const ULONGLONG timeout = 3000;
+	const DWORD start = GetTickCount();
+	const DWORD timeout = 3000;
 	while (executeScriptSyncResult_ == nullptr) {
 		wait();
-		if ((::GetTickCount64() - start) > timeout) {
+		if ((GetTickCount() - start) > timeout) {
 			break;
 		}
 	}
@@ -457,10 +468,10 @@ LPCWSTR cwv2::executeScriptSync(LPCWSTR script) {
 
 LPCWSTR cwv2::getSource() {
 	LPCWSTR source = nullptr;
-	if (!view2_3_) return source;
+	if (!webview_) return source;
 	
 	LPWSTR uri = nullptr;
-	if (SUCCEEDED(lastError_ = view2_3_->get_Source(&uri))) {
+	if (SUCCEEDED(lastError_ = webview_->get_Source(&uri))) {
 		source = _wcsdup(uri);
 		CoTaskMemFree(uri);
 	}
@@ -468,46 +479,45 @@ LPCWSTR cwv2::getSource() {
 }
 
 bool cwv2::goBack() {
-	if (!view2_3_) return false;
-	return SUCCEEDED(lastError_ = view2_3_->GoBack());
+	if (!webview_) return false;
+	return SUCCEEDED(lastError_ = webview_->GoBack());
 }
 
 bool cwv2::goForward() {
-	if (!view2_3_) return false;
-	return SUCCEEDED(lastError_ = view2_3_->GoForward());
+	if (!webview_) return false;
+	return SUCCEEDED(lastError_ = webview_->GoForward());
 }
 
 bool cwv2::navigate(LPCWSTR url) {
-	if (!view2_3_) {
+	if (!webview_) {
 		// 웹뷰 획득 이전 단계인 경우라면 uri를 저장하고 획득후에 navigate 한다.
 		lastRequest_.isHtmlContent = false;
 		lastRequest_.uriOrHtmlContent = url;
 		return true;
 	}
-	return SUCCEEDED(lastError_ = view2_3_->Navigate(url));
+	return SUCCEEDED(lastError_ = webview_->Navigate(url));
 }
 
 bool cwv2::navigateToString(LPCWSTR html) {
-	if (!view2_3_) {
+	if (!webview_) {
 		// 웹뷰 획득 이전 단계인 경우라면 저장한 후 획득 후 navigate 한다.
 		lastRequest_.isHtmlContent = true;
 		lastRequest_.uriOrHtmlContent = html ? html : L"";
 		return true;
 	}
-	return SUCCEEDED(lastError_ = view2_3_->NavigateToString(html));
+	return SUCCEEDED(lastError_ = webview_->NavigateToString(html));
 }
 
 bool cwv2::navigateWithWebResource(LPCWSTR uri, LPCWSTR method, BYTE* postData,
 	size_t byteSize, LPCWSTR headers) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 
 	// postData 및 headers가 없고, method가 GET이면 navigate로 호출한다.
 	if (!postData && !headers && (!method || _wcsicmp(L"GET", method) == 0)) {
 		return navigate(uri);
 	}
 	else {
-		ICoreWebView2Environment2* env2 = env_.getEnv2();
-		if (!env2) return false;
+		if (!env2_) return false;
 
 		// postData 또는 length값이 null(0)이면 모두 null(0)으로 한다.
 		if (!postData) byteSize = 0;
@@ -515,7 +525,7 @@ bool cwv2::navigateWithWebResource(LPCWSTR uri, LPCWSTR method, BYTE* postData,
 
 		CComPtr<IStream> postDataStream = SHCreateMemStream(postData, (UINT)byteSize);
 		CComPtr<ICoreWebView2WebResourceRequest> request;
-		lastError_ = env2->CreateWebResourceRequest(uri, method, postDataStream,
+		lastError_ = env2_->CreateWebResourceRequest(uri, method, postDataStream, 
 			headers, &request);
 		
 		if (FAILED(lastError_)) {
@@ -523,13 +533,13 @@ bool cwv2::navigateWithWebResource(LPCWSTR uri, LPCWSTR method, BYTE* postData,
 		}
 
 		return SUCCEEDED(lastError_ = 
-			view2_3_->NavigateWithWebResourceRequest(request));
+			webview_->NavigateWithWebResourceRequest(request));
 	}
 }
 
 bool cwv2::reload() {
-	if (!view2_3_) return false;
-	return SUCCEEDED(lastError_ = view2_3_->Reload());
+	if (!webview_) return false;
+	return SUCCEEDED(lastError_ = webview_->Reload());
 }
 
 bool cwv2::resize(int width, int height) {
@@ -542,59 +552,46 @@ bool cwv2::resize(int width, int height) {
 }
 
 bool cwv2::setHistoryChangedHandler(historyChanged handler) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 	historyChangedHandler_ = handler;
 	return true;
 }
 
 bool cwv2::setNavigationStartingHandler(navigationStarting handler) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 	navigationStartingHandler_ = handler;
 	return true;
 }
 
 bool cwv2::setNavigationCompletedHandler(navigationCompleted handler) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 	navigationCompletedHandler_ = handler;
 	return true;
 }
 
 bool cwv2::setDomContentLoadedHandler(domContentLoaded handler) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 	domContentLoadedHandler_ = handler;
 	return true;
 }
 
 bool cwv2::setWindowCloseRequestedHandler(windowCloseRequested handler) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 	windowCloseRequestedHandler_.bind(handler, this);
 	return true;
 }
 
-bool cwv2::setIsMutedChangedHandler(isMutedChanged handler) {
-	if (!view2_8_) return false;
-	isMutedChangedHandler_.bind(handler, this);
-	return true;
-}
-
-bool cwv2::setIsDocumentPlayingAudioChangedHandler(
-	isDocumentPlayingAudioChanged handler) {
-	if (!view2_8_) return false;
-	isDocumentPlayingAudioChangedHandler_.bind(handler, this);
-	return true;
-}
-
 bool cwv2::setWebMessageReceivedHandler(webMessageReceived handler) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 	webMessageReceivedHandler_ = handler;
 	return true;
 }
 
 bool cwv2::stop() {
 	// webview가 없는 경우에는 stop이 의미가 없기 때문에 성공으로 간주하고, true리턴.
-	if (!view2_3_) return true;
+	if (!webview_) return true;
 
-	return SUCCEEDED(lastError_ = view2_3_->Stop());
+	return SUCCEEDED(lastError_ = webview_->Stop());
 }
 	
 double cwv2::zoomFactor(const double* newZoomFactor) {
@@ -613,38 +610,6 @@ double cwv2::zoomFactor(const double* newZoomFactor) {
 	return curZoomFactor;
 }
 
-wv2bool cwv2::isMuted() {
-	wv2bool r = wv2boolNotSupported();
-	if (!view2_8_) return r;	
-	BOOL value;
-	if (SUCCEEDED(r.hr = view2_8_->get_IsMuted(&value))) {
-		r.value = value == TRUE;
-	}
-
-	return r;
-}
-
-wv2bool cwv2::setIsMuted(const bool muted) {
-	wv2bool r = wv2boolNotSupported();
-	if (!view2_8_) return r;
-
-	r.hr = view2_8_->put_IsMuted(muted ? TRUE : FALSE);
-	r.value = SUCCEEDED(r.hr);
-	return r;
-}
-
-wv2bool cwv2::isDocumentPlayingAudio() {
-	wv2bool r = wv2boolNotSupported();
-	if (!view2_8_) return r;
-
-	BOOL value;
-	if (SUCCEEDED(r.hr = view2_8_->get_IsDocumentPlayingAudio(&value))) {
-		r.value = value == TRUE;
-	}
-
-	return r;
-}
-
 // 웹뷰 초기화가 완료 여부 (초기화가 성공되었음을 의미하지 않음)
 bool cwv2::isDone() const {
 	return createStatus_ == failed || createStatus_ == completed;
@@ -656,10 +621,10 @@ cwv2::CreateStatus cwv2::createStatus() const {
 
 bool cwv2::setVirtualHostNameToFolderMapping(LPCWSTR hostName,
 	LPCWSTR folderPath, wv2HostResourceAccessKind accessKind) {
-	if (!view2_3_) return false;
+	if (!webview_) return false;
 	if (!hostName or !folderPath) return false;
 	
-	lastError_ = view2_3_->SetVirtualHostNameToFolderMapping(hostName,
+	lastError_ = webview_->SetVirtualHostNameToFolderMapping(hostName,
 		folderPath, (COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND)accessKind);
 
 	if (SUCCEEDED(lastError_)) {
@@ -673,14 +638,14 @@ bool cwv2::setVirtualHostNameToFolderMapping(LPCWSTR hostName,
 }
 
 bool cwv2::postWebMessageAsJson(LPCWSTR messageAsJson) {
-	if (!view2_3_ or !messageAsJson) return false;
-	lastError_ = view2_3_->PostWebMessageAsJson(messageAsJson);
+	if (!webview_ or !messageAsJson) return false;
+	lastError_ = webview_->PostWebMessageAsJson(messageAsJson);
 	return SUCCEEDED(lastError_);
 }
 
 bool cwv2::postWebMessageAsString(LPCWSTR messageAsString) {
-	if (!view2_3_ or !messageAsString) return false;
-	lastError_ = view2_3_->PostWebMessageAsString(messageAsString);
+	if (!webview_ or !messageAsString) return false;
+	lastError_ = webview_->PostWebMessageAsString(messageAsString);
 	return SUCCEEDED(lastError_);
 }
 
@@ -689,75 +654,12 @@ void cwv2::freeMemory(void* p) {
 	free(p);
 }
 
-wv2bool cwv2::openTaskManagerWindow() {
-	wv2bool r = wv2boolNotSupported();
-	if (!view2_8_) return r;
-	r.hr = view2_8_->OpenTaskManagerWindow();
-	r.value = SUCCEEDED(r.hr);
-	return r;
+wv2settings wv2settingsDefault() {
+	wv2settings def = { true, };
+	return def;
 }
 
 EventRegistrationToken emptyEventRegistrationToken() {
 	EventRegistrationToken token = { 0, };
 	return token;
-}
-
-wv2env* cwv2::getEnvironment() {
-	return &env_;
-}
-
-wv2bool cwv2::setNewWindowRequestedHandler(newWindowRequested handler) {
-	wv2bool r = wv2boolNotSupported();
-	if(!view2_3_) return r;
-	r.hr = S_OK;
-	r.value = true;
-
-	newWindowRequestedHandler_ = handler;
-
-	return r;
-}
-
-wv2bool cwv2::setDocumentTitleChangedHandler(documentTitleChanged handler) {
-	wv2bool r = wv2boolNotSupported();
-	if(!view2_3_) return r;
-	r.hr = S_OK;
-	r.value = true;
-
-	documentTitleChangedHandler_.bind(handler, this);
-	return r;
-}
-
-LPCWSTR cwv2::documentTitle() {
-	if(!view2_3_) return nullptr;
-
-	LPCWSTR result = nullptr;
-	LPWSTR title = nullptr;
-	lastError_ = view2_3_->get_DocumentTitle(&title);
-	if(SUCCEEDED(lastError_)) {
-		result = _wcsdup(title);
-		CoTaskMemFree(title);
-	}
-
-	return result;
-}
-
-wv2bool cwv2::setContentLoadingHandler(contentLoading handler) {
-	wv2bool r = wv2boolNotSupported();
-	if(!view2_3_) return r;
-	r.hr = S_OK;
-	r.value = true;
-
-	contentLoadingHandler_.bind(handler, this);
-	return r;
-}
-
-wv2bool cwv2::setScriptDialogOpeningHandler(scriptDialogOpening handler) {
-	wv2bool r = wv2boolNotSupported();
-	if(!view2_3_) return r;
-	r.hr = S_OK;
-	r.value = true;
-
-	scriptDialogOpeningHandler_.bind(handler, this);
-
-	return r;
 }

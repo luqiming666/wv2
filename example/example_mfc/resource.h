@@ -1,6 +1,6 @@
 ﻿//{{NO_DEPENDENCIES}}
-// Microsoft Visual C++에서 생성한 포함 파일입니다.
-// examplemfc.rc에서 사용되고 있습니다.
+// Microsoft Visual C++ 生成的包含文件。
+// 供 examplemfc.rc 使用
 //
 #define IDD_EXAMPLE_MFC_DIALOG          102
 #define IDR_MAINFRAME                   128

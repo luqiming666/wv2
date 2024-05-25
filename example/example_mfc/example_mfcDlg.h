@@ -2,7 +2,7 @@
 #pragma once
 #include "CMFCWebView2.h"
 
-class CexamplemfcDlg : public CDialog
+class CexamplemfcDlg : public CDialog, public IWebMsgListener
 {
 public:
 	CexamplemfcDlg(CWnd* pParent = nullptr);
@@ -32,4 +32,13 @@ public:
 	afx_msg void OnBnClickedButtonBack();
 	afx_msg void OnBnClickedButtonForward();
 	afx_msg void OnBnClickedButtonReload();
+
+public:
+	// IWebMsgListener methods
+	void OnWebMessageReceived(LPCTSTR message);
+	void OnNavigationCompleted();
+
+	void NotifyWebUI(const char* pMsg);
+	LRESULT OnNotifyWebPage(WPARAM wParam, LPARAM lParam);
+	CString GetHtmlPath(TCHAR* filename);
 };
